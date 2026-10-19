@@ -1,0 +1,21 @@
+# rage runtime
+tmp/
+log/
+storage/
+
+# bundler
+/.bundle/
+/vendor/bundle/
+
+# env & secrets
+.env
+.env.*
+
+# local test data (per-run time series, dumps)
+*.db
+*.csv
+
+# editors
+.idea/
+.vscode/
+*.swp
