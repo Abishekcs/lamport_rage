@@ -97,6 +97,11 @@ class LabController < RageController::API
   # should spike while ELU stays at baseline - the reactor is untouched.
   # The false-alarm case: /proc says "loaded", ELU says "reactor fine".
   #
+  # On a shared 1-core box an unthrottled hot thread strangles the reactor
+  # itself (cpu~96%, elu~1.0 - the burner gets the core, the loop starves),
+  # so this burner duty-cycles: 0.1s real burst / 0.15s yield. cpu% rises to
+  # ~40% while the reactor keeps its schedule and ELU stays at baseline.
+  #
   # Runs as burner+supervisor: if anything in the server context kills the
   # burner early, the supervisor respawns it until the deadline - and logs
   # every death so /lab/burn_check can document the killer.
@@ -124,9 +129,9 @@ class LabController < RageController::API
     render json: { scenario: "thread_cpu_burn", ms: ms }
   end
 
-  # 1-second progress probe for the burn thread: counts 500k clock-call blocks,
-  # so a healthy burner reads ~50-200/s; 0 with a live thread means it never
-  # gets scheduled.
+  # 1-second progress probe for the burn thread: each burst ~0.25s (0.1 burn +
+  # 0.15 yield), so a healthy burner reads ~3-4 bursts/s; 0 with a live thread
+  # means it never gets scheduled.
   def burn_check
     c1 = $burn_count
     started_burner = $burn_thread
@@ -144,24 +149,24 @@ class LabController < RageController::API
 
   private
 
-  # Real burn: clock_gettime every iteration - unoptimizable, proven to pin a
-  # core (the standalone probe). A pure `i += 1` inner loop gets DCE'd away by
-  # the JIT and burns nothing.
+  # Real burn bursts of 0.1s (clock_gettime every iteration - unoptimizable,
+  # the DCE'd `i += 1` inner loop burned nothing), yielding 0.15s between
+  # bursts so the reactor gets scheduled slices on a shared core.
   def spawn_burner
     $burn_thread = Thread.new do
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      i = 0
       begin
         while Process.clock_gettime(Process::CLOCK_MONOTONIC) < $burn_deadline
-          i += 1
-          next unless i > 500_000
-          $burn_count += 1
+          burst_end = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.1
           i = 0
-          if ($burn_count % 20).zero?
+          i += 1 while Process.clock_gettime(Process::CLOCK_MONOTONIC) < burst_end
+          $burn_count += 1
+          if ($burn_count % 10).zero?
             $burn_log << ["progress",
                           (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round(2),
                           $burn_count]
           end
+          sleep 0.15
         end
         $burn_log << ["completed",
                       (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round(2),
