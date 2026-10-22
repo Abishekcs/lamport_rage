@@ -12,12 +12,12 @@ if ENV["ELU"] == "1"
   Iodine::Perf.enable_idle_time!
 
   Iodine.on_state(:on_start) do
-    Iodine::Perf.event_loop_utilization(reset: true)
-:e end
+    Iodine::Perf.event_loop_utilization(key: :monitor, reset: true)
+  end
 
   # Sample at >=1s intervals: long in-flight waits land in the next sample.
   Rage::Telemetry.every(1_000) do
-    elu = Iodine::Perf.event_loop_utilization
+    elu = Iodine::Perf.event_loop_utilization(key: :monitor)
     next if elu.nil?
 
     if elu > 0.9

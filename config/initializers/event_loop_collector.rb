@@ -33,7 +33,7 @@ Rage::Telemetry.every(1_000) do
   cpu_pct = (ut - prev[1] + st - prev[2]) / clk_tck / elapsed * 100
   prev = [now, ut, st]
 
-  elu = Iodine::Perf.event_loop_utilization
+  elu = Iodine::Perf.event_loop_utilization(key: :collector)
   rss_kb = File.read("/proc/self/status")[/VmRSS:\s+(\d+)/, 1].to_i
 
   out.puts({ ts: Time.now.to_f, pid: Process.pid, elu: elu&.round(4),
