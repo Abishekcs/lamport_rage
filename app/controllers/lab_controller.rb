@@ -96,36 +96,76 @@ class LabController < RageController::API
   # CPU burn on a background OS thread: cpu_pct (whole-process, all threads)
   # should spike while ELU stays at baseline - the reactor is untouched.
   # The false-alarm case: /proc says "loaded", ELU says "reactor fine".
+  #
+  # Runs as burner+supervisor: if anything in the server context kills the
+  # burner early, the supervisor respawns it until the deadline - and logs
+  # every death so /lab/burn_check can document the killer.
   def thread_burn
-    ms = [params[:ms].to_i, 30_000].min
+    ms = [params[:ms].to_i.zero? ? 12_000 : params[:ms].to_i, 60_000].min
     puts "[#{Process.pid}] lab: thread_burn START ms=#{ms}"
     $burn_count = 0
+    $burn_log = []
     $spawn_error = nil
-    begin
-      $burn_thread = Thread.new do
-        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + ms / 1000.0
-        while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
-          i = 0; i += 1 while i < 100_000
-          $burn_count += 1
-        end
-        puts "[#{Process.pid}] lab: thread_burn END (burned #{ms}ms)"
+    $burn_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + ms / 1000.0
+    spawn_burner
+    $supervisor = Thread.new do
+      while Process.clock_gettime(Process::CLOCK_MONOTONIC) < $burn_deadline
+        sleep 0.5
+        next if $burn_thread&.alive?
+
+        $burn_log << ["supervisor: burner died early, respawning",
+                      (Process.clock_gettime(Process::CLOCK_MONOTONIC) - $burn_deadline).round(2),
+                      $burn_count]
+        spawn_burner
       end
-    rescue => e
-      $spawn_error = "#{e.class}: #{e.message}"
     end
     puts "[#{Process.pid}] lab: thread_burn SPAWNED (burning #{ms}ms; reactor stays responsive)"
     render json: { scenario: "thread_cpu_burn", ms: ms }
+  end
+
+  private
+
+  def spawn_burner
+    $burn_thread = Thread.new do
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      begin
+        while Process.clock_gettime(Process::CLOCK_MONOTONIC) < $burn_deadline
+          i = 0; i += 1 while i < 100_000
+          $burn_count += 1
+          if ($burn_count % 200).zero?
+            $burn_log << ["progress",
+                          (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round(2),
+                          $burn_count]
+          end
+        end
+        $burn_log << ["completed",
+                      (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round(2),
+                      $burn_count]
+      rescue Exception => e
+        $burn_log << ["died: #{e.class}: #{e.message}",
+                      (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round(2),
+                      $burn_count]
+      end
+    end
+    $burn_thread.name = "lab-burner"
+  rescue => e
+    $spawn_error = "#{e.class}: #{e.message}"
   end
 
   # 1-second progress probe for the burn thread: fps while burning is
   # hundreds; 0 with a live thread means it never gets scheduled.
   def burn_check
     c1 = $burn_count
+    started_burner = $burn_thread
     sleep 1
     render json: {
       bumping_per_sec: $burn_count - c1,
-      thread_status: $burn_thread&.status,
-      spawn_error: $spawn_error
+      started_thread_status: started_burner&.status,
+      total_bumps: $burn_count,
+      spawn_error: $spawn_error,
+      current_thread_alive: $burn_thread&.alive?,
+      threads: Thread.list.map { |t| "#{t.name || t.class}" },
+      log: $burn_log&.last(20)
     }
   end
 end
