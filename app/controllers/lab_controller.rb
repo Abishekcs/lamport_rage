@@ -99,13 +99,33 @@ class LabController < RageController::API
   def thread_burn
     ms = [params[:ms].to_i, 30_000].min
     puts "[#{Process.pid}] lab: thread_burn START ms=#{ms}"
-    burn = Thread.new do
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + ms / 1000.0
-      i = 0
-      i += 1 while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
-      puts "[#{Process.pid}] lab: thread_burn END (burned #{ms}ms)"
+    $burn_count = 0
+    $spawn_error = nil
+    begin
+      $burn_thread = Thread.new do
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + ms / 1000.0
+        while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+          i = 0; i += 1 while i < 100_000
+          $burn_count += 1
+        end
+        puts "[#{Process.pid}] lab: thread_burn END (burned #{ms}ms)"
+      end
+    rescue => e
+      $spawn_error = "#{e.class}: #{e.message}"
     end
     puts "[#{Process.pid}] lab: thread_burn SPAWNED (burning #{ms}ms; reactor stays responsive)"
     render json: { scenario: "thread_cpu_burn", ms: ms }
+  end
+
+  # 1-second progress probe for the burn thread: fps while burning is
+  # hundreds; 0 with a live thread means it never gets scheduled.
+  def burn_check
+    c1 = $burn_count
+    sleep 1
+    render json: {
+      bumping_per_sec: $burn_count - c1,
+      thread_status: $burn_thread&.status,
+      spawn_error: $spawn_error
+    }
   end
 end
