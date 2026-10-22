@@ -123,6 +123,23 @@ class LabController < RageController::API
     render json: { scenario: "thread_cpu_burn", ms: ms }
   end
 
+  # 1-second progress probe for the burn thread: fps while burning is
+  # hundreds; 0 with a live thread means it never gets scheduled.
+  def burn_check
+    c1 = $burn_count
+    started_burner = $burn_thread
+    sleep 1
+    render json: {
+      bumping_per_sec: $burn_count - c1,
+      started_thread_status: started_burner&.status,
+      total_bumps: $burn_count,
+      spawn_error: $spawn_error,
+      current_thread_alive: $burn_thread&.alive?,
+      threads: Thread.list.map { |t| "#{t.name || t.class}" },
+      log: $burn_log&.last(20)
+    }
+  end
+
   private
 
   def spawn_burner
@@ -150,22 +167,5 @@ class LabController < RageController::API
     $burn_thread.name = "lab-burner"
   rescue => e
     $spawn_error = "#{e.class}: #{e.message}"
-  end
-
-  # 1-second progress probe for the burn thread: fps while burning is
-  # hundreds; 0 with a live thread means it never gets scheduled.
-  def burn_check
-    c1 = $burn_count
-    started_burner = $burn_thread
-    sleep 1
-    render json: {
-      bumping_per_sec: $burn_count - c1,
-      started_thread_status: started_burner&.status,
-      total_bumps: $burn_count,
-      spawn_error: $spawn_error,
-      current_thread_alive: $burn_thread&.alive?,
-      threads: Thread.list.map { |t| "#{t.name || t.class}" },
-      log: $burn_log&.last(20)
-    }
   end
 end
