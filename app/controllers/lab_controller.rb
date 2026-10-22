@@ -1,6 +1,7 @@
 # ELU lab scenarios - deliberately pathological handlers to stress each
 # quadrant of the ELU-vs-CPU% diagnostic matrix. One run per scenario,
 # separated by idle gaps, makes the segments visible in the JSONL.
+require "fileutils"
 class LabController < RageController::API
   @@cpu_prev = [Process.clock_gettime(Process::CLOCK_MONOTONIC), nil]
 
@@ -54,19 +55,42 @@ class LabController < RageController::API
   # The "obvious" overload - both metrics scream.
   def burn
     ms = [params[:ms].to_i, 5_000].min
+    puts "[#{Process.pid}] lab: reactor_burn START ms=#{ms}"
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + ms / 1000.0
     i = 0
     i += 1 while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
     render json: { scenario: "reactor_cpu_burn", ms: ms }
   end
 
-  # Blocking sleep INSIDE the reactor thread: the loop can't wait in the
-  # event provider, so ELU should pin ~1.0 while cpu_pct stays ~0.
-  # The invisible case: /proc says "idle", ELU says "frozen".
+  # REAL blocking call INSIDE the reactor thread: Process.wait has no fiber
+  # scheduler hook (unlike Kernel.sleep, which yields!), so the OS thread and
+  # GVL are pinned: ELU pins ~1.0 while cpu_pct stays ~0. The invisible case.
   def sleep_ms
     ms = [params[:ms].to_i, 10_000].min
-    Kernel.sleep(ms / 1000.0)
+    puts "[#{Process.pid}] lab: reactor_block START ms=#{ms}"
+    child = Process.spawn("sleep", (ms / 1000.0).to_s)
+    Process.wait(child)
+    puts "[#{Process.pid}] lab: reactor_block END (loop was unresponsive below)"
     render json: { scenario: "reactor_blocked", ms: ms }
+  end
+
+  # HOOKLESS freeze INSIDE the reactor thread: File.open on a FIFO with no
+  # writer blocks the OS thread in the kernel - no fiber scheduler hook
+  # exists for it, so Ruby cannot yield. The loop is frozen: ELU pins ~1.0
+  # while cpu_pct stays ~0. Proxy for "a C ext / syscall wedged the reactor".
+  def freeze
+    ms = [params[:ms].to_i, 20_000].min
+    FileUtils.mkdir_p(File.join(Rage.root, "tmp"))
+    fifo = File.join(Rage.root, "tmp", "lab_freeze_fifo")
+    system("mkfifo #{fifo}") unless File.exist?(fifo)
+    raise Errno::ENOENT, "mkfifo failed" unless File.exist?(fifo)
+    puts "[#{Process.pid}] lab: reactor_freeze START ms=#{ms}"
+    # writer arrives after ms -> open() unblocks
+    Thread.new { sleep(ms / 1000.0); File.write(fifo, "x") }
+    File.read(fifo)
+    File.delete(fifo)
+    puts "[#{Process.pid}] lab: reactor_freeze END (loop was frozen above)"
+    render json: { scenario: "reactor_frozen", ms: ms }
   end
 
   # CPU burn on a background OS thread: cpu_pct (whole-process, all threads)
@@ -74,11 +98,14 @@ class LabController < RageController::API
   # The false-alarm case: /proc says "loaded", ELU says "reactor fine".
   def thread_burn
     ms = [params[:ms].to_i, 30_000].min
-    Thread.new do
+    puts "[#{Process.pid}] lab: thread_burn START ms=#{ms}"
+    burn = Thread.new do
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + ms / 1000.0
       i = 0
       i += 1 while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      puts "[#{Process.pid}] lab: thread_burn END (burned #{ms}ms)"
     end
+    puts "[#{Process.pid}] lab: thread_burn SPAWNED (burning #{ms}ms; reactor stays responsive)"
     render json: { scenario: "thread_cpu_burn", ms: ms }
   end
 end

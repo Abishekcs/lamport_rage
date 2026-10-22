@@ -8,7 +8,8 @@ Rage.routes.draw do
 
   # ELU lab: diagnostic matrix + Prometheus exposition
   get  "/lab/burn",       to: "lab#burn"        # CPU burn in the reactor
-  get  "/lab/sleep",      to: "lab#sleep_ms"    # blocking call in the reactor
+  get  "/lab/sleep",      to: "lab#sleep_ms"    # schedulable wait in the reactor (yields!)
+  get  "/lab/freeze",     to: "lab#freeze"      # hookless freeze in the reactor (the real ice)
   get  "/lab/thread_burn", to: "lab#thread_burn" # CPU burn on a background thread
   get  "/lab/metrics",    to: "lab#metrics"     # Prometheus scrape target
 end
