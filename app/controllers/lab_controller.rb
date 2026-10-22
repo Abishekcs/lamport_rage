@@ -112,9 +112,10 @@ class LabController < RageController::API
       while Process.clock_gettime(Process::CLOCK_MONOTONIC) < $burn_deadline
         sleep 0.5
         next if $burn_thread&.alive?
+        next unless Process.clock_gettime(Process::CLOCK_MONOTONIC) < $burn_deadline
 
         $burn_log << ["supervisor: burner died early, respawning",
-                      (Process.clock_gettime(Process::CLOCK_MONOTONIC) - $burn_deadline).round(2),
+                      ($burn_deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)).round(2),
                       $burn_count]
         spawn_burner
       end
@@ -123,8 +124,9 @@ class LabController < RageController::API
     render json: { scenario: "thread_cpu_burn", ms: ms }
   end
 
-  # 1-second progress probe for the burn thread: fps while burning is
-  # hundreds; 0 with a live thread means it never gets scheduled.
+  # 1-second progress probe for the burn thread: counts 500k clock-call blocks,
+  # so a healthy burner reads ~50-200/s; 0 with a live thread means it never
+  # gets scheduled.
   def burn_check
     c1 = $burn_count
     started_burner = $burn_thread
@@ -142,14 +144,20 @@ class LabController < RageController::API
 
   private
 
+  # Real burn: clock_gettime every iteration - unoptimizable, proven to pin a
+  # core (the standalone probe). A pure `i += 1` inner loop gets DCE'd away by
+  # the JIT and burns nothing.
   def spawn_burner
     $burn_thread = Thread.new do
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      i = 0
       begin
         while Process.clock_gettime(Process::CLOCK_MONOTONIC) < $burn_deadline
-          i = 0; i += 1 while i < 100_000
+          i += 1
+          next unless i > 500_000
           $burn_count += 1
-          if ($burn_count % 200).zero?
+          i = 0
+          if ($burn_count % 20).zero?
             $burn_log << ["progress",
                           (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round(2),
                           $burn_count]
