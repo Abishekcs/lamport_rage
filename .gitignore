@@ -2,6 +2,7 @@
 tmp/
 log/
 storage/
+data/
 
 # bundler
 /.bundle/
